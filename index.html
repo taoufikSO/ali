@@ -565,29 +565,65 @@
             }
 
             async getAudioFeatures(trackIds) {
+                if (!trackIds || trackIds.length === 0) {
+                    console.log('No track IDs provided for audio features');
+                    return [];
+                }
+                
                 const features = [];
                 const batchSize = 100; // Spotify API limit
+                
+                console.log(`Getting audio features for ${trackIds.length} tracks in batches of ${batchSize}`);
                 
                 for (let i = 0; i < trackIds.length; i += batchSize) {
                     const batch = trackIds.slice(i, i + batchSize);
                     const ids = batch.join(',');
                     
+                    console.log(`Fetching audio features batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(trackIds.length/batchSize)}: ${batch.length} tracks`);
+                    
                     try {
                         const response = await fetch(`https://api.spotify.com/v1/audio-features?ids=${ids}`, {
                             headers: {
-                                'Authorization': `Bearer ${this.accessToken}`
+                                'Authorization': `Bearer ${this.accessToken}`,
+                                'Content-Type': 'application/json'
                             }
                         });
                         
+                        console.log(`Audio features response status: ${response.status}`);
+                        
+                        if (response.status === 401) {
+                            console.error('Audio features: 401 Unauthorized');
+                            // Don't throw here, just skip this batch
+                            continue;
+                        }
+                        
+                        if (response.status === 403) {
+                            console.error('Audio features: 403 Forbidden - may need app permissions');
+                            continue;
+                        }
+                        
                         if (response.ok) {
                             const data = await response.json();
-                            features.push(...data.audio_features.filter(f => f !== null));
+                            const validFeatures = data.audio_features ? data.audio_features.filter(f => f !== null) : [];
+                            features.push(...validFeatures);
+                            console.log(`Got ${validFeatures.length} valid audio features from this batch`);
+                        } else {
+                            console.error(`Audio features error: ${response.status}`);
+                            const errorData = await response.json().catch(() => ({}));
+                            console.error('Error details:', errorData);
                         }
                     } catch (error) {
-                        console.error('Error getting audio features:', error);
+                        console.error('Error getting audio features batch:', error);
+                        // Continue with next batch
+                    }
+                    
+                    // Small delay between batches to avoid rate limiting
+                    if (i + batchSize < trackIds.length) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
                 
+                console.log(`Total audio features retrieved: ${features.length} out of ${trackIds.length} tracks`);
                 return features;
             }
 
@@ -689,28 +725,39 @@
                     
                     // Add seeds (max 5 total, at least 1 required)
                     let seedCount = 0;
-                    if (topArtists.length > 0 && seedCount < 5) {
-                        const artistSeeds = topArtists.slice(0, Math.min(2, 5 - seedCount));
+                    
+                    // Prioritize artist seeds if we have them
+                    if (topArtists.length > 0) {
+                        const artistSeeds = topArtists.slice(0, Math.min(2, 5));
                         params.append('seed_artists', artistSeeds.join(','));
                         seedCount += artistSeeds.length;
                         console.log('Added artist seeds:', artistSeeds);
                     }
                     
+                    // Add track seeds if we have space
                     if (seedTracks.length > 0 && seedCount < 5) {
-                        const trackSeeds = seedTracks.slice(0, Math.min(3, 5 - seedCount));
+                        const remainingSlots = 5 - seedCount;
+                        const trackSeeds = seedTracks.slice(0, remainingSlots);
                         params.append('seed_tracks', trackSeeds.join(','));
                         seedCount += trackSeeds.length;
                         console.log('Added track seeds:', trackSeeds);
                     }
                     
-                    // Add audio features as targets if available
-                    if (avgFeatures.danceability !== undefined) {
+                    // If still no seeds, add a genre as fallback
+                    if (seedCount === 0) {
+                        params.append('seed_genres', 'pop');
+                        seedCount = 1;
+                        console.log('Added fallback genre seed: pop');
+                    }
+                    
+                    // Add audio features as targets if available (not required)
+                    if (avgFeatures.danceability !== undefined && avgFeatures.danceability > 0) {
                         params.append('target_danceability', avgFeatures.danceability.toFixed(3));
                     }
-                    if (avgFeatures.energy !== undefined) {
+                    if (avgFeatures.energy !== undefined && avgFeatures.energy > 0) {
                         params.append('target_energy', avgFeatures.energy.toFixed(3));
                     }
-                    if (avgFeatures.valence !== undefined) {
+                    if (avgFeatures.valence !== undefined && avgFeatures.valence > 0) {
                         params.append('target_valence', avgFeatures.valence.toFixed(3));
                     }
                     
