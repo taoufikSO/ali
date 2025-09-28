@@ -140,7 +140,6 @@
         this.redirectUri = window.location.hostname === 'localhost'
           ? 'http://localhost:5173/callback'
           : 'https://www.tensflowrevops.com/callback';
-        // includes private playlists
         this.scopes = 'user-read-email user-read-private playlist-read-private playlist-read-collaborative';
 
         this.accessToken = null;
@@ -267,7 +266,7 @@
         }
       }
 
-      // ===== Core =====
+      // ===== Helpers =====
       extractPlaylistId(url) {
         try {
           const u = new URL(url.trim());
@@ -279,6 +278,7 @@
         return m ? m[1] : null;
       }
 
+      // ===== Main flow =====
       async analyzePlaylist() {
         const url = document.getElementById('playlist-url').value;
         const id = this.extractPlaylistId(url);
@@ -286,8 +286,9 @@
 
         this.showLoading(true); this.hideError();
         try {
+          // playlist meta
           const pRes = await fetch(`https://api.spotify.com/v1/playlists/${id}`, {
-            headers:{Authorization:`Bearer ${this.accessToken}`}
+            headers:{ Authorization:`Bearer ${this.accessToken}` }
           });
           if (pRes.status === 401) { this.clearToken(); throw new Error('Authentication expired. Please login again.'); }
           if (pRes.status === 404) throw new Error('Playlist not found. Make sure it is public or shared with you.');
@@ -297,16 +298,20 @@
           // paginate tracks
           let items = []; let next = `https://api.spotify.com/v1/playlists/${id}/tracks?limit=50`;
           while (next) {
-            const tr = await fetch(next, { headers:{Authorization:`Bearer ${this.accessToken}`}});
+            const tr = await fetch(next, { headers:{ Authorization:`Bearer ${this.accessToken}` } });
             if (!tr.ok) throw new Error(`Failed to fetch tracks: ${tr.status}`);
             const td = await tr.json();
             items = items.concat(td.items || []);
             next = td.next;
           }
 
-          const valid = items.filter(it => it?.track?.id);
-          const ids = valid.map(it => it.track.id);
+          // keep only real, playable tracks (no episodes/local/missing IDs)
+          const valid = items.filter(it => {
+            const t = it?.track;
+            return t && t.type === 'track' && !t.is_local && !!t.id;
+          });
 
+          const ids = valid.map(it => it.track.id);
           const features = await this.getAudioFeatures(ids);
 
           this.currentPlaylistData = { playlist, tracks: valid, audioFeatures: features };
@@ -416,7 +421,7 @@
         try {
           const avg = this.calculateAverageFeatures(audioFeatures || []);
 
-          // count artists
+          // build seeds from valid tracks
           const artistCounts = {};
           for (const it of tracks) {
             const arts = it?.track?.artists || [];
@@ -427,40 +432,36 @@
             .map(([id])=>id)
             .filter(Boolean);
 
-          // unique track seeds
           const seedTrackPool = [...new Set(tracks.map(it => it?.track?.id).filter(Boolean))];
 
           const params = new URLSearchParams();
           params.set('limit', '10');
-          params.set('market', 'from_token'); // improves availability
+          params.set('market', 'from_token');
 
           let used = 0;
 
-          // add up to 2 artist seeds
-          const artistSeeds = topArtists.slice(0, Math.min(2, 5));
+          const artistSeeds = topArtists.slice(0, 2);
           if (artistSeeds.length) { params.set('seed_artists', artistSeeds.join(',')); used += artistSeeds.length; }
 
-          // fill remaining with track seeds (max total seeds = 5)
           if (used < 5 && seedTrackPool.length) {
             const trackSeeds = seedTrackPool.slice(0, 5 - used);
             if (trackSeeds.length) { params.set('seed_tracks', trackSeeds.join(',')); used += trackSeeds.length; }
           }
 
-          // guaranteed fallback so we never send 0 seeds
+          // strong fallback so we never send 0 seeds
           if (used === 0) {
-            params.set('seed_genres', 'pop');
+            params.set('seed_genres', 'pop,edm,dance,hip-hop,rock');
           }
 
-          // optional feature targets
-          const addTarget = (k,v) => { if (typeof v === 'number' && v > 0) params.set(`target_${k}`, v.toFixed(3)); };
+          const addTarget = (k,v)=>{ if (typeof v==='number' && v>0) params.set(`target_${k}`, v.toFixed(3)); };
           addTarget('danceability', avg.danceability);
           addTarget('energy',       avg.energy);
           addTarget('valence',      avg.valence);
 
           console.log('Recommendations seed params:', {
             seed_artists: params.get('seed_artists'),
-            seed_tracks: params.get('seed_tracks'),
-            seed_genres: params.get('seed_genres')
+            seed_tracks:  params.get('seed_tracks'),
+            seed_genres:  params.get('seed_genres')
           });
 
           const url = `https://api.spotify.com/v1/recommendations?${params.toString()}`;
@@ -473,7 +474,7 @@
             const e = await res.json().catch(()=>({}));
             throw new Error(`Bad seed parameters: ${e.error?.message || '400'}`);
           }
-          if (res.status === 404) throw new Error('No valid seeds. Try another playlist or make it public.');
+          if (res.status === 404) throw new Error('No valid seeds. This playlist may be local/episodes-only/unavailable.');
           if (!res.ok) {
             const e = await res.json().catch(()=>({}));
             throw new Error(`Spotify API error: ${res.status} - ${e.error?.message || 'Unknown'}`);
