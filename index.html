@@ -295,6 +295,17 @@
                     return;
                 }
 
+                // Wait for DOM to be ready
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        this.setupAfterDOMReady();
+                    });
+                } else {
+                    this.setupAfterDOMReady();
+                }
+            }
+
+            setupAfterDOMReady() {
                 // Check for stored token
                 this.loadStoredToken();
                 this.setupEventListeners();
@@ -421,8 +432,10 @@
                     
                     const user = await response.json();
                     document.getElementById('user-name').textContent = user.display_name;
+                    this.updateUI(); // Update UI after getting user info
                 } catch (error) {
                     console.error('Error getting user info:', error);
+                    this.clearToken(); // Clear token on error
                 }
             }
 
@@ -444,10 +457,13 @@
                     userInfo.classList.remove('hidden');
                     loginBtn.classList.add('hidden');
                     mainSection.classList.remove('hidden');
+                    // Hide the auth section when logged in
+                    authSection.style.display = 'none';
                 } else {
                     userInfo.classList.add('hidden');
                     loginBtn.classList.remove('hidden');
                     mainSection.classList.add('hidden');
+                    authSection.style.display = 'block';
                 }
             }
 
