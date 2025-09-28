@@ -599,6 +599,7 @@
                 if (!this.currentPlaylistData) return;
                 
                 const { tracks, audioFeatures } = this.currentPlaylistData;
+                this.showLoading(true);
                 
                 try {
                     // Calculate average features
@@ -621,14 +622,27 @@
                     
                     const seedTracks = tracks.slice(0, 3).map(item => item.track.id);
                     
+                    // Ensure we have at least some seeds
+                    if (topArtists.length === 0 && seedTracks.length === 0) {
+                        throw new Error('No valid seeds found for recommendations');
+                    }
+                    
                     const params = new URLSearchParams({
-                        seed_artists: topArtists.join(','),
-                        seed_tracks: seedTracks.join(','),
-                        target_danceability: avgFeatures.danceability,
-                        target_energy: avgFeatures.energy,
-                        target_valence: avgFeatures.valence,
                         limit: 10
                     });
+                    
+                    // Add seeds (max 5 total)
+                    if (topArtists.length > 0) {
+                        params.append('seed_artists', topArtists.slice(0, 2).join(','));
+                    }
+                    if (seedTracks.length > 0) {
+                        params.append('seed_tracks', seedTracks.slice(0, 3).join(','));
+                    }
+                    
+                    // Add audio features if available
+                    if (avgFeatures.danceability) params.append('target_danceability', avgFeatures.danceability.toFixed(2));
+                    if (avgFeatures.energy) params.append('target_energy', avgFeatures.energy.toFixed(2));
+                    if (avgFeatures.valence) params.append('target_valence', avgFeatures.valence.toFixed(2));
                     
                     const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
                         headers: {
@@ -636,12 +650,34 @@
                         }
                     });
                     
+                    if (response.status === 401) {
+                        this.clearToken();
+                        return;
+                    }
+                    
+                    if (response.status === 403) {
+                        throw new Error('Recommendations unavailable. Your Spotify app may need to be in Extended Quota mode or you need to be added as a test user.');
+                    }
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(`Spotify API error: ${response.status} - ${errorData.error?.message || 'Unknown error'}`);
+                    }
+                    
                     const data = await response.json();
+                    
+                    if (!data.tracks || data.tracks.length === 0) {
+                        throw new Error('No recommendations found for this playlist');
+                    }
+                    
                     this.displayRecommendations(data.tracks);
+                    this.hideError();
                     
                 } catch (error) {
                     console.error('Error getting recommendations:', error);
-                    this.showError('Error getting recommendations. Please try again.');
+                    this.showError(`Recommendations error: ${error.message}`);
+                } finally {
+                    this.showLoading(false);
                 }
             }
 
